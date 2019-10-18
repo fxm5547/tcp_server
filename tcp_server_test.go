@@ -1,10 +1,12 @@
 package tcp_server
 
 import (
-	. "github.com/smartystreets/goconvey/convey"
+	"bytes"
 	"net"
 	"testing"
 	"time"
+
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func buildTestServer() *server {
@@ -15,18 +17,37 @@ func Test_accepting_new_client_callback(t *testing.T) {
 	server := buildTestServer()
 
 	var messageReceived bool
-	var messageText string
+	var messageText []byte
 	var newClient bool
 	var connectinClosed bool
 
 	server.OnNewClient(func(c *Client) {
 		newClient = true
 	})
-	server.OnNewMessage(func(c *Client, message string) {
+	server.OnSplitMessage(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
+		if atEOF && len(data) == 0 {
+			return 0, nil, nil
+		}
+		if i := bytes.IndexByte(data, '\n'); i >= 0 {
+			// We have a full newline-terminated line.
+			return i + 1, data[:i+1], nil
+		}
+		if atEOF {
+			return 0, nil, nil
+		}
+		// Request more data.
+		return 0, nil, nil
+	})
+	server.OnNewMessage(func(c *Client, message []byte) {
+		t.Log("OnNewMessage", string(message))
 		messageReceived = true
 		messageText = message
 	})
 	server.OnClientConnectionClosed(func(c *Client, err error) {
+		t.Log("OnClientConnectionClosed")
+		if err != nil {
+			t.Log("err: ", err.Error())
+		}
 		connectinClosed = true
 	})
 	go server.Listen()
@@ -46,7 +67,7 @@ func Test_accepting_new_client_callback(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	Convey("Messages should be equal", t, func() {
-		So(messageText, ShouldEqual, "Test message\n")
+		So(string(messageText), ShouldEqual, "Test message\n")
 	})
 	Convey("It should receive new client callback", t, func() {
 		So(newClient, ShouldEqual, true)

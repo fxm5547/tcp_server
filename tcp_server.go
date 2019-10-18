@@ -2,6 +2,7 @@ package tcp_server
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/tls"
 	"log"
 	"net"
@@ -19,33 +20,44 @@ type server struct {
 	config                   *tls.Config
 	onNewClientCallback      func(c *Client)
 	onClientConnectionClosed func(c *Client, err error)
-	onNewMessage             func(c *Client, message string)
+	onNewMessage             func(c *Client, message []byte)
+	onSplitMessage           bufio.SplitFunc
 }
 
 // Read client data from channel
 func (c *Client) listen() {
 	c.Server.onNewClientCallback(c)
-	reader := bufio.NewReader(c.conn)
-	for {
-		message, err := reader.ReadString('\n')
-		if err != nil {
-			c.conn.Close()
-			c.Server.onClientConnectionClosed(c, err)
-			return
-		}
-		c.Server.onNewMessage(c, message)
+	scanner := bufio.NewScanner(c.conn)
+	scanner.Split(c.Server.onSplitMessage)
+	buf := make([]byte, 4096)
+	//set maxTokenSize to 20 MB
+	scanner.Buffer(buf, 20*1024*1024)
+	for scanner.Scan() {
+		c.Server.onNewMessage(c, scanner.Bytes())
 	}
+	c.conn.Close()
+	c.Server.onClientConnectionClosed(c, scanner.Err())
+}
+
+// Split message that is ending with \n
+func defaultSplitFunc(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if atEOF && len(data) == 0 {
+		return 0, nil, nil
+	}
+	if i := bytes.IndexByte(data, '\n'); i >= 0 {
+		// We have a full newline-terminated line.
+		return i + 1, data[:i+1], nil
+	}
+	if atEOF {
+		return 0, nil, nil
+	}
+	// Request more data.
+	return 0, nil, nil
 }
 
 // Send text message to client
-func (c *Client) Send(message string) error {
-	_, err := c.conn.Write([]byte(message))
-	return err
-}
-
-// Send bytes to client
-func (c *Client) SendBytes(b []byte) error {
-	_, err := c.conn.Write(b)
+func (c *Client) Send(message []byte) error {
+	_, err := c.conn.Write(message)
 	return err
 }
 
@@ -67,8 +79,13 @@ func (s *server) OnClientConnectionClosed(callback func(c *Client, err error)) {
 	s.onClientConnectionClosed = callback
 }
 
+// Called when split message
+func (s *server) OnSplitMessage(callback bufio.SplitFunc) {
+	s.onSplitMessage = callback
+}
+
 // Called when Client receives new message
-func (s *server) OnNewMessage(callback func(c *Client, message string)) {
+func (s *server) OnNewMessage(callback func(c *Client, message []byte)) {
 	s.onNewMessage = callback
 }
 
@@ -105,7 +122,8 @@ func New(address string) *server {
 	}
 
 	server.OnNewClient(func(c *Client) {})
-	server.OnNewMessage(func(c *Client, message string) {})
+	server.OnSplitMessage(defaultSplitFunc)
+	server.OnNewMessage(func(c *Client, message []byte) {})
 	server.OnClientConnectionClosed(func(c *Client, err error) {})
 
 	return server
@@ -123,7 +141,8 @@ func NewWithTLS(address string, certFile string, keyFile string) *server {
 	}
 
 	server.OnNewClient(func(c *Client) {})
-	server.OnNewMessage(func(c *Client, message string) {})
+	server.OnSplitMessage(defaultSplitFunc)
+	server.OnNewMessage(func(c *Client, message []byte) {})
 	server.OnClientConnectionClosed(func(c *Client, err error) {})
 
 	return server

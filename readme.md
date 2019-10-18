@@ -26,6 +26,7 @@ func main() {
 		// lets send some message
 		c.Send("Hello")
 	})
+	server.OnSplitMessage(bufio.ScanLines)
 	server.OnNewMessage(func(c *tcp_server.Client, message string) {
 		// new message received
 	})
